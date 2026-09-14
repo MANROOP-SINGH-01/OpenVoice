@@ -1,0 +1,364 @@
+# Tag-triggered release: builds the Windows installer and attaches it.
+#
+# This is the only path by which a user ever gets OpenVoice. Everything the app
+# needs at run time has to be assembled here, because the machine that installs
+# it has no Rust and no Node. It no longer needs Python either: the speech
+# engine links into the binary, and the weights are installed by an NSIS hook.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Buildable without tagging, so the packaging path can be exercised before a
+  # release depends on it. A tagless run uploads artifacts and publishes nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/ui/package-lock.json
+
+      # ------------------------------------------------------------------ model
+      # The weights are installed by an NSIS hook, not bundled as a Tauri
+      # resource, so that they stay out of the updater payload. See
+      # crates/ov-app/installer-hooks.nsh for why.
+      - name: Fetch and verify the speech model
+        run: pwsh scripts/fetch-model.ps1
+
+      - name: Fail if the model is missing
+        shell: pwsh
+        run: |
+          $tokens = 'models/parakeet-tdt-0.6b-v2/tokens.txt'
+          if (-not (Test-Path $tokens)) {
+            throw "no speech model at $tokens; the installer would ship without one"
+          }
+
+      # ----------------------------------------------------------------- bundle
+      - name: Install UI dependencies
+        working-directory: apps/ui
+        run: npm ci
+
+      # The signing key is what makes the updater safe to have at all: the app
+      # verifies every downloaded artifact against the public half compiled into
+      # it (tauri.conf.json, plugins.updater.pubkey), so a tampered or
+      # substituted update is discarded without being executed. That check does
+      # not depend on trusting GitHub or TLS.
+      #
+      # An unset secret is a silent failure, not a loud one -- `tauri build`
+      # would produce an installer with no .sig beside it, the release would
+      # publish, and every existing install would reject the update it was
+      # offered. Fail here instead, where the cause is obvious.
+      - name: Require the updater signing key
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${KEY}" ]]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY is not set."
+            echo "Generate a keypair with:"
+            echo "  npx tauri signer generate -w ~/.tauri/openvoice-updater.key"
+            echo "then add the private key as a repository secret and put the"
+            echo "public half in crates/ov-app/tauri.conf.json."
+            exit 1
+          fi
+
+      - name: Build the installer
+        working-directory: crates/ov-app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # Empty by construction: the signing key was generated without a
+          # passphrase, so there is nothing here to keep secret and storing it as
+          # one would only obscure that. It must still be *set* — an unset value
+          # makes the signer prompt, which in CI means hanging until the job is
+          # cancelled rather than failing with a reason.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          # Consumed by installer-hooks.nsh. Absolute, because NSIS resolves
+          # `File` paths relative to the generated script, not the repo.
+          MODEL_SOURCE_DIR: ${{ github.workspace }}\models\parakeet-tdt-0.6b-v2
+        run: npx --prefix ../../apps/ui tauri build
+
+      # Asserts the failure that actually bit during development: an installer
+      # that builds cleanly, reports success, and contains no speech model. The
+      # first 0.5.0 build was 9 MB for exactly that reason and said nothing.
+      #
+      # The size floor is deliberately crude. Anything under 200 MB cannot be
+      # carrying a 482 MB compressed model, whatever else may have changed.
+      - name: The installer must contain the speech model
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter '*-setup.exe' -Path target |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $exe) { throw "tauri build produced no NSIS installer" }
+          $mb = [math]::Round($exe.Length / 1MB, 1)
+          Write-Host "installer: $($exe.Name) - $mb MB"
+          if ($exe.Length -lt 200MB) {
+            throw ("Installer is $mb MB. It cannot contain the speech model, which is " +
+                   "482 MB compressed. Check that build.rs found the model and filled " +
+                   "in crates/ov-app/installer-hooks.nsh.")
+          }
+
+      # Reports, rather than enforces, what an update costs a user.
+      #
+      # The design intent was that updates stay small: the model is installed by
+      # an NSIS hook rather than as a `bundle.resources` entry, so that it sits
+      # outside the Tauri resource walker. That distinction turns out not to help.
+      # The hook embeds the weights in the installer executable with `File`, and
+      # the updater artifact is a zip of that same executable -- so an update
+      # carries the model either way, and moving it between the two mechanisms
+      # changes only where it lands on disk.
+      #
+      # Making updates genuinely small needs a second, model-free build published
+      # as the updater artifact while the full installer serves downloads, plus a
+      # tested answer for the uninstall hook wiping $INSTDIR\models during the
+      # upgrade's uninstall-previous step. That is a real piece of work and it is
+      # not done, so this step states the number instead of pretending otherwise.
+      - name: Report the update download size
+        shell: pwsh
+        run: |
+          $art = Get-ChildItem -Recurse -Filter '*.nsis.zip' -Path target |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $art) {
+            Write-Host "no updater artifact (unsigned build)"
+          } else {
+            $mb = [math]::Round($art.Length / 1MB, 1)
+            Write-Host "::notice::Existing installs will download $mb MB for this update."
+          }
+
+      - name: Collect the installer and checksum it
+        id: collect
+        shell: pwsh
+        run: |
+          $nsis = Get-ChildItem -Recurse -Filter '*-setup.exe' -Path target |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $nsis) { throw "tauri build produced no NSIS installer" }
+          $mb = [math]::Round($nsis.Length / 1MB, 1)
+          Write-Host "$($nsis.Name) - $mb MB"
+
+          # An unsigned installer is the one people are most entitled to verify,
+          # so the checksum ships beside it rather than being left implied.
+          $sum = (Get-FileHash $nsis.FullName -Algorithm SHA256).Hash.ToLower()
+          $sumFile = "$($nsis.FullName).sha256"
+          "$sum  $($nsis.Name)" | Out-File $sumFile -Encoding ascii -NoNewline
+          Write-Host "sha256 $sum"
+
+          # A second copy under a name that never changes. The download button on
+          # the README and the website points at this one, so the link cannot rot
+          # the way a hand-typed version number does -- which is exactly how a
+          # release went out with the README advertising an installer that had
+          # never been built, and every visitor falling back to the newest one
+          # they could find by hand, months old.
+          $stable = Join-Path (Split-Path $nsis.FullName) 'OpenVoice-x64-setup.exe'
+          Copy-Item $nsis.FullName $stable -Force
+          "$sum  OpenVoice-x64-setup.exe" | Out-File "$stable.sha256" -Encoding ascii -NoNewline
+
+          "path=$($nsis.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+          "sha256=$sum" | Out-File $env:GITHUB_OUTPUT -Append
+          "sumfile=$sumFile" | Out-File $env:GITHUB_OUTPUT -Append
+          "stable=$stable" | Out-File $env:GITHUB_OUTPUT -Append
+          "stablesum=$stable.sha256" | Out-File $env:GITHUB_OUTPUT -Append
+
+      # The manifest the running app fetches. `latest.json` is what
+      # `plugins.updater.endpoints` points at, and its `signature` is the minisign
+      # signature `tauri build` produced beside the installer -- the thing the app
+      # verifies before it will execute anything it downloaded.
+      - name: Build the update manifest
+        id: manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $sig = Get-ChildItem -Recurse -Filter '*-setup.exe.sig' -Path target |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $sig) {
+            throw "no .sig beside the installer; the signing key did not reach tauri build"
+          }
+
+          $version = '${{ github.ref_name }}' -replace '^v', ''
+          $installer = Split-Path '${{ steps.collect.outputs.path }}' -Leaf
+          $url = "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$installer"
+
+          $manifest = [ordered]@{
+            version = $version
+            # RFC 3339, which is what the updater expects.
+            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            notes = "See the release notes at https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+            platforms = [ordered]@{
+              'windows-x86_64' = [ordered]@{
+                signature = (Get-Content $sig.FullName -Raw).Trim()
+                url = $url
+              }
+            }
+          }
+
+          $out = Join-Path (Split-Path '${{ steps.collect.outputs.path }}') 'latest.json'
+          $manifest | ConvertTo-Json -Depth 5 | Out-File $out -Encoding utf8 -NoNewline
+          Write-Host "wrote $out for version $version"
+
+          "path=$out" | Out-File $env:GITHUB_OUTPUT -Append
+          "sig=$($sig.FullName)" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvoice-windows-installer
+          path: |
+            ${{ steps.collect.outputs.path }}
+            ${{ steps.collect.outputs.sumfile }}
+          if-no-files-found: error
+
+      # Only a tag publishes. A workflow_dispatch run has proved the packaging
+      # path and stops there.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.collect.outputs.path }}
+            ${{ steps.collect.outputs.sumfile }}
+            ${{ steps.manifest.outputs.sig }}
+            ${{ steps.manifest.outputs.path }}
+          # Not a draft. It used to be one, on the reasoning that the installer
+          # should be checked before anyone could download it. What actually
+          # happened is that two releases were built, never un-drafted, and never
+          # reached a single user -- while the README advertised them and the
+          # updater went on offering a months-old build. A release nobody can
+          # download is indistinguishable from a release that was never made, and
+          # the check it was protecting is better done before the tag than after.
+          draft: false
+          # Alpha, and unsigned. "Pre-release" is the honest label until there is
+          # a signing certificate and a tested upgrade path.
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            Windows installer. Runs entirely on your machine — no account, no
+            cloud, no telemetry.
+
+            The speech model is included in the installer, so it works offline
+            from the moment it finishes installing — there is no first-run
+            download and nothing to choose.
+
+            This build is **not code-signed**, so Windows SmartScreen will warn
+            about an unknown publisher. Verify it yourself:
+
+            ```powershell
+            Get-FileHash OpenVoice_*_x64-setup.exe -Algorithm SHA256
+            ```
+
+            Expected: `${{ steps.collect.outputs.sha256 }}`
+
+      # Where a *person* downloading the app is sent.
+      #
+      # A fixed tag holding a fixed filename, for the same reason the updater has
+      # one: `releases/latest/download/...` skips prereleases, and every release
+      # here is a prerelease, so that URL 404s for as long as OpenVoice is in
+      # alpha. The README and the website point here and never need editing again.
+      #
+      # This is the fix for the failure that prompted it. The README carried a
+      # hand-written `.../download/v0.4.2/OpenVoice_0.4.2_x64-setup.exe`, for a
+      # version that was never tagged and never built. The link 404'd, and people
+      # who wanted the app fell back to the newest release they could find by
+      # hand -- which was v0.4.0, months old, carrying every bug the two unshipped
+      # releases had fixed. A version number written by hand into a link is a
+      # promise that nothing enforces.
+      - name: Publish the permanent download link
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.collect.outputs.stable }}
+            ${{ steps.collect.outputs.stablesum }}
+          tag_name: download
+          name: Latest download
+          draft: false
+          prerelease: false
+          body: |
+            The current OpenVoice installer, at a URL that never changes:
+
+            <https://github.com/${{ github.repository }}/releases/download/download/OpenVoice-x64-setup.exe>
+
+            This is **${{ github.ref_name }}**. See the
+            [releases page](https://github.com/${{ github.repository }}/releases)
+            for version history and notes.
+
+            SHA-256: `${{ steps.collect.outputs.sha256 }}`
+
+      # Prove the link works, rather than trusting that it does.
+      #
+      # This is the check whose absence caused the whole problem. The README
+      # advertised a download URL that had never resolved, and nothing anywhere
+      # would have said so -- not the release run, not CI, not a test. The
+      # link-lint in CI can only see that a URL is version-free; it cannot see
+      # whether GitHub will actually serve it. This can, because by this point in
+      # the job the release exists.
+      #
+      # A short retry loop, because asset availability lags the API response that
+      # created it by a second or two. A 404 after that is a real failure and
+      # fails the release, which is the correct outcome: a release that published
+      # a broken download button is worse than one that stopped and said so.
+      - name: Verify the permanent download link resolves
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          url="https://github.com/${{ github.repository }}/releases/download/download/OpenVoice-x64-setup.exe"
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' "$url" || echo 000)
+            if [[ "$code" == "200" ]]; then
+              echo "$url -> $code"
+              echo "Download link verified: $url" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "attempt $attempt: $code, retrying in 5s"
+            sleep 5
+          done
+          echo "::error::the permanent download link did not resolve ($code): $url"
+          exit 1
+
+      # Where the running app actually looks.
+      #
+      # Not `releases/latest/download/...`: that URL skips prereleases, and every
+      # release here is one, so it would 404 for as long as OpenVoice is in alpha.
+      # A fixed `updater` tag is stable regardless of the prerelease flag and
+      # regardless of which version is newest.
+      #
+      # ORDERING, and it matters: this manifest points at the versioned release's
+      # installer, so that release has to exist and be downloadable first. It is
+      # published by the step above and is no longer a draft, so by the time this
+      # runs the URL below resolves. When the release *was* a draft, this manifest
+      # offered every user an update that 404'd until someone remembered to
+      # un-draft it by hand.
+      - name: Publish the update manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.manifest.outputs.path }}
+          tag_name: updater
+          name: Update manifest
+          # Deliberately not a draft and not a prerelease: this release exists
+          # only to serve one file at a stable URL, and both flags would hide it
+          # from the very fetch it is here to answer.
+          draft: false
+          prerelease: false
+          body: |
+            Machine-readable update manifest for OpenVoice's built-in updater.
+            Not a download — see the
+            [releases page](https://github.com/${{ github.repository }}/releases)
+            for the installer.
+
+            Points at **${{ github.ref_name }}**. That release must be published
+            (not a draft) for the update to be downloadable.

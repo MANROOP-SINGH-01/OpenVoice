@@ -1,0 +1,161 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono";
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--body);
+  font: 400 14px/1.55 var(--font-sans);
+  font-feature-settings: "calt", "kern", "liga", "cv02", "cv03", "cv04", "cv11", "tnum", "zero";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* The canvas is opted into per window rather than being the global default.
+ *
+ * The overlay is a transparent window: the OS composites the pill over whatever
+ * the user is working in, and *any* element in the chain — `html`, `body`,
+ * `#root` — that paints a background draws the window's own rectangle around it.
+ *
+ * Stating it this way round is the whole point. `data-window` is set by script,
+ * but a background on bare `body` paints from the moment the stylesheet is
+ * applied, which is before any script has run — so the overlay showed that
+ * rectangle for the entire gap. The Hub declares the same black natively
+ * (`backgroundColor` in tauri.conf.json), so it has nothing to flash to; the
+ * overlay deliberately has no such fallback. */
+html[data-window="hub"],
+html[data-window="hub"] body,
+html[data-window="sheet"],
+html[data-window="sheet"] body,
+html[data-window="flowbar"],
+html[data-window="flowbar"] body {
+  background: var(--canvas);
+}
+
+html[data-window="overlay"],
+html[data-window="overlay"] body,
+html[data-window="overlay"] #root {
+  background: transparent !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure {
+  margin: 0;
+}
+
+/* Focus is never removed. Green earns the exception to the greens-are-only-live
+   rule because a focus ring is small and its meaning is unambiguous. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 1px solid var(--live);
+  outline-offset: 2px;
+  /* No `border-radius` here. Browsers already draw an outline that follows the
+     element's own corners; setting a radius on focus *overrode* that with 4px,
+     so the ring cut straight across the 8px corners of every button it landed
+     on. Letting each control keep its own radius is both correct and less
+     code. */
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: var(--live-soft);
+  color: var(--ink);
+}
+
+/* Visible to screen readers, not to the eye. Used to announce state changes that
+   are otherwise conveyed only by colour and motion. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Keyboard users must be able to reach the content without tabbing the whole
+   sidebar on every screen. */
+.skip-link {
+  position: absolute;
+  top: var(--s-3);
+  left: var(--s-3);
+  z-index: 10;
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-3);
+  border: 1px solid var(--live);
+  border-radius: var(--r-lg);
+  color: var(--ink);
+  font: 500 13px/1 var(--font-sans);
+  transform: translateY(-200%);
+  transition: transform var(--t-base) var(--ease);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/* Scrollbars recede into the canvas rather than floating over it. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* `--surface-4` (#1c1c21) on a pure black canvas is about 1.2:1 — a scrollbar
+   you cannot actually see, which is not the same thing as a discreet one. One
+   step up the ladder keeps it quiet and makes it findable. */
+::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border: 3px solid var(--canvas);
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--disabled);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

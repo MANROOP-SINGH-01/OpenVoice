@@ -1,0 +1,82 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenVoice",
+  "version": "0.8.0",
+  "identifier": "ai.openvoice.desktop",
+  "build": {
+    "frontendDist": "../../apps/ui/dist",
+    "devUrl": "http://localhost:5199",
+    "beforeDevCommand": "npm run dev:ui",
+    "beforeBuildCommand": "npm run build:ui"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5199 http://localhost:5199"
+    },
+    "windows": [
+      {
+        "label": "hub",
+        "title": "OpenVoice",
+        "url": "index.html?window=hub",
+        "width": 1060,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 560,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "theme": "Dark",
+        "backgroundColor": "#000000",
+        "visible": true
+      },
+      {
+        "label": "overlay",
+        "url": "index.html?window=overlay",
+        "width": 404,
+        "height": 640,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "focusable": false,
+        "visible": false,
+        "acceptFirstMouse": false
+      }
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/MANROOP-SINGH-01/OpenVoice/releases/download/updater/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMxQjU4QzIwMjgzM0MzRjgKUldUNHd6TW9JSXkxTWJFdDhTVXRsNU5ud3N4eE82VjNSUnZyUEpXSUxIY1diV09lY0xtbVFINXIK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Local-first voice dictation",
+    "longDescription": "Hold a key, speak, and your words appear wherever your cursor is. Runs entirely on your machine — no cloud, no account, no telemetry.",
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}

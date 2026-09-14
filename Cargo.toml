@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+# Crates are added here as they land, so `cargo check --workspace` is always green.
+# Planned, in order: ov-audio, ov-asr, ov-input, ov-store, ov-cli, ov-app.
+members = [
+    "crates/ov-core",
+    "crates/ov-format",
+    "crates/ov-input",
+    "crates/ov-audio",
+    "crates/ov-asr",
+    "crates/ov-fetch",
+    "crates/ov-store",
+    "crates/ov-cli",
+    "crates/ov-app",
+]
+
+[workspace.package]
+version = "0.8.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+repository = "https://github.com/MANROOP-SINGH-01/OpenVoice"
+authors = ["Manroop Singh Bhogal <imbhogal17@gmail.com>"]
+
+[workspace.dependencies]
+# Internal.
+#
+# The explicit `version` on a path dependency is not redundant. Without it the
+# requirement resolves to `*`, which `cargo deny check bans` correctly flags as a
+# wildcard: a workspace where every internal edge is "any version" cannot be
+# audited.
+#
+# These MUST be kept in step with `workspace.package.version` above. They drifted
+# once already -- they sat at 0.4.2 through the 0.4.3 and 0.4.4 releases, which
+# resolved fine only because `^0.4.2` happily matches 0.4.4. The 0.5.0 bump is
+# where that stopped being true, and every `cargo` invocation began failing with
+# "failed to select a version for the requirement `ov-core = ^0.4.2`". If you
+# change the version above, change these six lines in the same commit.
+ov-core = { path = "crates/ov-core", version = "0.8.0" }
+ov-format = { path = "crates/ov-format", version = "0.8.0" }
+ov-audio = { path = "crates/ov-audio", version = "0.8.0" }
+ov-asr = { path = "crates/ov-asr", version = "0.8.0" }
+ov-input = { path = "crates/ov-input", version = "0.8.0" }
+# Not yet written. Declared here so the crate lands without a manifest change;
+# harmless while unused, because Cargo only resolves an entry a member consumes.
+ov-store = { path = "crates/ov-store", version = "0.8.0" }
+# The only network-capable crate in the workspace. See ADR 0009 and
+# scripts/check-no-network.sh, which enforces that "only".
+ov-fetch = { path = "crates/ov-fetch", version = "0.8.0" }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serde / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Misc
+time = { version = "0.3", features = ["formatting", "macros"] }
+regex = "1"
+
+# Test-only
+insta = { version = "1", features = ["yaml"] }
+proptest = "1"
+pretty_assertions = "1"
+
+[profile.dev]
+opt-level = 1          # keep audio/DSP tolerable in debug builds
+# Line tables only, not full DWARF. Backtraces still name the function and line —
+# which is all this project has ever needed — while cutting peak linker memory and
+# target-directory size substantially. Full debuginfo across an optimised
+# dependency graph is a real cause of out-of-memory builds on a 16 GB machine.
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3          # dependencies always optimized; huge win for ASR/DSP crates
+debug = false          # never step into a dependency; do not pay to describe them
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

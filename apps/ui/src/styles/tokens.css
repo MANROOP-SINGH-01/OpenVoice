@@ -1,0 +1,155 @@
+/* OpenVoice design tokens — see DESIGN.md for the direction contract and the
+ * reasoning behind every value. Derived from the eight design systems analysed in
+ * docs/UI-RESEARCH.md, with the palette pinned by the user: #44D62C on #000000. */
+
+:root {
+  /* -- Surface ladder ------------------------------------------------------
+   * Deliberately tiny steps: the whole ladder spans 28 hex points. A dark UI
+   * that jumps #111 -> #222 -> #333 is the clearest marker of an amateur
+   * system; Linear's entire ladder spans ten. */
+  --canvas: #000000;
+  --surface-1: #0a0a0b;
+  --surface-2: #101012;
+  --surface-3: #16161a;
+  --surface-4: #1c1c21;
+
+  --hairline: #1f1f24;
+  --hairline-strong: #2c2c33;
+
+  /* -- Text ladder ---------------------------------------------------------
+   * Neutral greys, not blue-tinted: the canvas is pure neutral black, so a
+   * tint would read as a colour mistake. Contrast ratios against #000 noted;
+   * --faint fails AA and is valid only for disabled controls. */
+  --ink: #f5f5f5;    /* 19.0:1 */
+  --body: #c9c9c9;   /* 11.3:1 */
+  --mute: #8f8f8f;   /*  5.6:1 */
+  --faint: #7a7a7a;  /*  4.6:1 — tertiary text, still AA */
+
+  /* Genuinely disabled controls only. WCAG exempts disabled elements from the
+     contrast minimum; nothing that carries information may use this. --faint was
+     previously this dark and had crept onto placeholders, the formatter trace's
+     rule names and raw error text — all of which a person needs to read. */
+  --disabled: #5c5c5c;
+
+  /* -- The one colour ------------------------------------------------------
+   * Green means the microphone is open, or an action that opens it. Never
+   * success, never links, never emphasis. Never a large flat fill: #44D62C at
+   * full chroma on pure black vibrates and leaves afterimages above button
+   * size. Borders, text, icons, waveform bars, small fills only. */
+  --live: #44d62c;
+  --live-hi: #5ce843;
+  --live-dim: #1d5a13;
+  --live-soft: rgb(68 214 44 / 12%);
+  --live-ring: rgb(68 214 44 / 24%);
+
+  /* -- Semantic state. Desaturated so they never out-shout --live. --------- */
+  --danger: #f45b5b;
+  --danger-soft: rgb(244 91 91 / 12%);
+  --warn: #d9a441;
+  --warn-soft: rgb(217 164 65 / 12%);
+
+  /* -- Type ---------------------------------------------------------------
+   * Mono is for transcripts, numbers and code only. Using it for atmosphere
+   * is the tell of a design pretending to be technical. */
+  --font-sans: "Geist Sans Variable", "Geist Sans", "Geist Variable", "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  /* -- Space. 8px base. --------------------------------------------------- */
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 8px;
+  --s-4: 12px;
+  --s-5: 16px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 48px;
+  --s-9: 64px;
+
+  /* -- Radius. Category centre: not Warp's severe 3px, not Wispr's
+   *    marketing-scale 40px (a web idiom, not app chrome). ----------------- */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+  --r-full: 9999px;
+
+  /* -- Motion. One authored moment (the waveform); everything else is a
+   *    plain state change. ------------------------------------------------ */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --t-fast: 90ms;
+  --t-base: 160ms;
+  --t-slow: 260ms;
+
+  /* -- Layout ------------------------------------------------------------- */
+  --sidebar-w: 220px;
+  --control-h: 32px;
+  --control-h-sm: 28px;
+}
+
+/* -- Type styles. Tracking follows the universal ~ -0.03em rule and reaches
+ *    exactly zero at body size. Weight never exceeds 600. ------------------ */
+
+.t-display {
+  font: 600 32px/1.15 var(--font-sans);
+  letter-spacing: -0.96px;
+  color: var(--ink);
+}
+
+.t-title {
+  font: 600 22px/1.25 var(--font-sans);
+  letter-spacing: -0.44px;
+  color: var(--ink);
+}
+
+.t-heading {
+  font: 600 17px/1.35 var(--font-sans);
+  letter-spacing: -0.17px;
+  color: var(--ink);
+}
+
+.t-subheading {
+  font: 500 15px/1.4 var(--font-sans);
+  letter-spacing: -0.1px;
+  color: var(--ink);
+}
+
+.t-body {
+  font: 400 14px/1.55 var(--font-sans);
+  letter-spacing: 0;
+  color: var(--body);
+}
+
+.t-body-strong {
+  font: 500 14px/1.55 var(--font-sans);
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.t-caption {
+  font: 400 12px/1.45 var(--font-sans);
+  letter-spacing: 0;
+  color: var(--mute);
+}
+
+/* The one positive-tracked style, borrowed from Raycast's airier small type.
+   Labels form controls and table headers only -- never an eyebrow above every
+   section, which is grammar you did not choose. */
+.t-label {
+  font: 500 11px/1.3 var(--font-sans);
+  letter-spacing: 0.3px;
+  color: var(--mute);
+}
+
+.t-mono {
+  font: 400 13px/1.5 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--body);
+}
+
+.t-mono-lg {
+  font: 500 20px/1.2 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+  color: var(--ink);
+}

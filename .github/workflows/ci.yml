@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Applies to workspace crates only: Cargo passes --cap-lints allow to registry
+  # dependencies, so a warning in someone else's crate cannot fail our build.
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The full workspace only builds on Windows, and that is not an oversight.
+  # `ov-input`, `ov-cli` and `ov-app` call Win32 directly (`WinTextSink`,
+  # `WinHotkeyListener`, `WinForeground`) with no non-Windows implementation
+  # behind them. macOS and Linux adapters are v0.5 work; when they exist, turn
+  # this back into an os matrix and delete this comment.
+  #
+  # The portability guarantee is kept by the `portable` job below, which builds
+  # every crate that is genuinely platform-independent today on Linux.
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      - name: Docs build without warnings
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # ---------------------------------------------------------------------------
+  # Everything not tied to Win32, compiled on Linux. This is what stops a
+  # platform assumption from leaking into a crate that is supposed to be
+  # portable, months before anyone attempts the port.
+  #
+  # `ov-input` is included deliberately: every item in it sits behind
+  # `cfg(windows)`, so on Linux it must still compile -- as an empty crate. A
+  # Win32 call added without a gate fails here, which is the point.
+  # ---------------------------------------------------------------------------
+  portable:
+    name: Portable crates (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # cpal links ALSA on Linux; ov-audio does not build without the headers.
+      - name: ALSA headers for cpal
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      - name: Clippy
+        run: >-
+          cargo clippy
+          -p ov-core -p ov-format -p ov-asr -p ov-audio -p ov-input
+          --all-targets --all-features
+
+      - name: Test
+        run: >-
+          cargo test
+          -p ov-core -p ov-format -p ov-asr -p ov-audio -p ov-input
+          --all-features
+
+  # ---------------------------------------------------------------------------
+  purity:
+    name: Domain purity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # ov-core and ov-format must not depend on the OS, the filesystem, the
+      # network, an audio library, a GUI toolkit, or an async runtime. wasm32 is a
+      # target where none of those can link, so this compiles only if the hexagonal
+      # boundary is intact. See docs/adr/0001-hexagonal-architecture.md.
+      #
+      # If this job fails, do not add a feature flag to make it pass. Move the
+      # offending code into an adapter crate -- that is the whole point.
+      - name: Core crates must compile for wasm32
+        run: cargo check -p ov-core -p ov-format --target wasm32-unknown-unknown
+
+  # ---------------------------------------------------------------------------
+  no-network:
+    name: No network in the hot path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # "Local-first, no telemetry" is a product promise. A promise that is only
+      # written in a README rots the first time someone adds a convenient
+      # dependency. This makes it a build failure instead.
+      #
+      # Note what this does *not* cover: ov-app links Tauri, which depends on
+      # reqwest. The sealed set is the crates that carry audio and transcripts.
+      # See the header of the script.
+      - name: Assert no HTTP client outside the model downloader
+        run: bash scripts/check-no-network.sh
+
+  # ---------------------------------------------------------------------------
+  links:
+    name: Download links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The download button is the first thing a new user touches, and it was
+      # broken for two releases without anything noticing: it named a version
+      # that had never been built. See the script for the whole story.
+      - name: Assert the download link cannot go stale
+        run: bash scripts/check-download-links.sh
+
+  # ---------------------------------------------------------------------------
+  deny:
+    name: Licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses advisories sources
+
+  # ---------------------------------------------------------------------------
+  # The Tauri shell embeds apps/ui/dist. Without this job a frontend that does
+  # not typecheck or does not build is only discovered at package time, and the
+  # installer ships an empty window.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/ui/package-lock.json
+
+      - name: Install
+        working-directory: apps/ui
+        run: npm ci
+
+      - name: Lint
+        working-directory: apps/ui
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: apps/ui
+        run: npx tsc --noEmit -p tsconfig.app.json
+
+      # The renderer owns two rules that nothing else can check: when the Flow
+      # Bar is allowed to put itself away, and whether the layout viewport is
+      # still the window it was created at. Both are pure functions with no DOM
+      # of their own, and both were arrived at by getting them wrong in front of
+      # a user. Typecheck and build cannot tell whether either still holds.
+      - name: Test
+        working-directory: apps/ui
+        run: npm test
+
+      - name: Build
+        working-directory: apps/ui
+        run: npm run build
